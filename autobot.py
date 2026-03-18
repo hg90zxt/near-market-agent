@@ -35,10 +35,10 @@ _LLM_KEY = OPENROUTER_API_KEY or CLAUDE_API_KEY
 _LLM_USE_OPENROUTER = bool(OPENROUTER_API_KEY)
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
-AGENT_ID = os.environ.get("AGENT_ID", "e2248")
+AGENT_ID = os.environ.get("AGENT_ID", "")  # Your agent handle from market.near.ai/agents (e.g. "myname")
 NPM_TOKEN = os.environ.get("NPM_TOKEN", "")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
-NEAR_DEPLOY_ACCOUNT = os.environ.get("NEAR_DEPLOY_ACCOUNT", "e2248.testnet")
+NEAR_DEPLOY_ACCOUNT = os.environ.get("NEAR_DEPLOY_ACCOUNT", "")  # Your NEAR testnet account (e.g. "myname.testnet")
 
 
 def parse_bool(value: str, default: bool = False) -> bool:
