@@ -1,0 +1,8 @@
+nohup: ignoring input
+2026-03-05 14:32:21,057 === NEAR AutoBot v4 started ===
+2026-03-05 14:32:21,057 Mode: LIVE | State: SQLite
+2026-03-05 14:32:21,057 Strategy: min_score=0.35, max_actions_per_cycle=40, retries=4
+2026-03-05 14:32:21,251 --- Check cycle ---
+2026-03-05 14:32:49,008 Found jobs: 1372, already bid: 0, ranked candidates: 1372
+2026-03-05 14:32:49,008 COMPETITION: generating entry for 64eb189a...
+2026-03-05 14:33:17,793 COMPETITION ENTRY: 100.0 NEAR score=1.07 [COMPETITION] Build the Most Useful Agent for market.near.ai

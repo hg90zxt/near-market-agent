@@ -1,0 +1,10 @@
+{
+  "MAX_BID_COUNT": 100,
+  "MIN_BUDGET": 1.0,
+  "MAX_BUDGET": 9999.0,
+  "CHECK_INTERVAL": 300,
+  "AUTO_SUBMIT": true,
+  "SKIP_TAGS": ["video", "image", "meme", "art", "design"],
+  "ONLY_TAGS": [],
+  "MIN_JOB_SCORE": 0.25
+}
