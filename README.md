@@ -11,7 +11,7 @@ No human involvement required after launch.
 | Bids placed (first 24h) | **800+** |
 | Job types handled | Standard + Competition + Instant (Services) |
 | Uptime | Continuous (VPS) |
-| AI Model | Claude Sonnet 4.6 via OpenRouter (8K tokens) |
+| AI Model | DeepSeek V3 via OpenRouter (8K tokens) |
 | Revision support | Up to 3 rounds per job |
 | Real-time | WebSocket notifications |
 
@@ -118,11 +118,14 @@ Only jobs with `score >= 0.25` are bid on.
 
 ## Smart bid pricing
 
-| Score | Bid % of budget |
+| Job type | Bid % of budget |
 |---|---|
-| >= 0.90 | 90% |
-| >= 0.75 | 85% |
-| < 0.75 | 80% |
+| Budget ≤ 2 NEAR | 100% (no room to discount) |
+| Blog / SEO / Newsletter / Writing | 95% |
+| Research / Analysis / Audit | 90% |
+| High score (>= 0.90) | 90% |
+| Medium score (>= 0.75) | 85% |
+| Default | 80% |
 
 ## Smart deliverables
 
@@ -130,10 +133,12 @@ Output format is auto-detected from job tags and description:
 
 | Tags / Keywords | Format |
 |---|---|
-| code, smart-contract, solidity | Markdown with code blocks |
+| code, smart-contract, solidity | Markdown with code blocks + GitHub Gist link |
+| blog, seo, article, copywriting | Full blog post (headline, sections, CTA) |
+| newsletter, email | Newsletter with 3 subject line options |
 | research, analysis, report | Structured report with sections |
 | documentation, docs, tutorial | Technical documentation |
-| marketing, content, social | Marketing copy |
+| meme, marketing, social, tweet | Marketing copy with variations |
 | Default | General professional deliverable |
 
 ## Features
@@ -142,20 +147,26 @@ Output format is auto-detected from job tags and description:
 - **WebSocket** — real-time job notifications, instant response to new assignments
 - **Real action execution** — npm publish, GitHub repo/gist, NEAR contract deploy
 - **Smart filtering** — skips jobs requiring unavailable actions, alerts on high-budget skips
+- **Zero-balance filter** — skips jobs where requester has no funds
 - **Client blacklist** — blocks known non-paying or abusive job posters
 - **Service registry** — auto-registers on market.near.ai for instant job matching
 - **Assignment messaging** — private communication channel with job requesters
 - **Smart proposals** — 5 templates matched to job tags (code / docs / research / marketing / NEAR)
-- **Adaptive bid pricing** — bids as % of budget based on job score
+- **Smart bid pricing** — bid % based on job type (blog/seo=95%, research=90%, etc.)
 - **Revision handling** — reads feedback via assignment messages, regenerates up to 3 times
 - **Job memory** — tracks which tags lead to wins/losses, adjusts scoring over time
 - **Competition support** — detects `job_type: competition`, generates and submits full entry
-- **Earnings monitoring** — tracks total earned via agent API, notifies on new payments
+- **Earnings monitoring** — live stats from marketplace API, notifies on new payments
+- **Unpaid job alerts** — Telegram alert if accepted job not paid after 6h
+- **Auto-dispute** — optionally opens dispute for unpaid jobs after 24h
+- **Auto-withdraw** — withdraws balance above threshold to your NEAR wallet
+- **Telegram commands** — `/status`, `/balance`, `/dispute`, `/withdraw`, `/help`
 - **Daily summary** — Telegram report every 8 hours with stats and balance
 - **Stats tracking** — bids, wins, losses, win rate, revenue earned, revisions handled
 - **Retry / backoff** — handles `429` and `5xx` errors automatically (up to 4 retries)
 - **SQLite state** — persistent across restarts, with JSON fallback
 - **Dry-run mode** — test without placing real bids: `DRY_RUN=true python3 autobot.py`
+- **Path traversal protection** — LLM-generated filenames are sandboxed
 
 ## Environment variables
 
@@ -168,7 +179,7 @@ Output format is auto-detected from job tags and description:
 | `AGENT_ID` | — | Your agent ID on market.near.ai |
 | `NPM_TOKEN` | — | npm automation token for package publishing |
 | `GITHUB_TOKEN` | — | GitHub token (repo scope) for repo/gist creation |
-| `NEAR_DEPLOY_ACCOUNT` | `e2248.testnet` | NEAR testnet account for contract deployment |
+| `NEAR_DEPLOY_ACCOUNT` | — | NEAR testnet account for contract deployment (e.g. `yourname.testnet`) |
 | `DRY_RUN` | `false` | Safe testing mode |
 | `USE_SQLITE` | `true` | Use SQLite instead of JSON |
 | `MIN_JOB_SCORE` | `0.25` | Minimum score to bid |
@@ -194,7 +205,7 @@ autobot.py
 ├── auto_bid()                    -- bid on top ranked jobs
 ├── check_bid_statuses()          -- track accepted/rejected, trigger submit
 ├── auto_submit_job()             -- generate + submit deliverable
-├── generate_deliverable()        -- Claude Sonnet 4.6 via OpenRouter (8K tokens)
+├── generate_deliverable()        -- DeepSeek V3 via OpenRouter (8K tokens)
 ├── generate_revision()           -- revise based on feedback
 ├── publish_npm_package()         -- compile and publish to npmjs.com
 ├── create_github_repo()          -- create repo and push code via GitHub API
