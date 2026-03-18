@@ -35,7 +35,7 @@ _LLM_KEY = OPENROUTER_API_KEY or CLAUDE_API_KEY
 _LLM_USE_OPENROUTER = bool(OPENROUTER_API_KEY)
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
-AGENT_ID = os.environ.get("AGENT_ID", "")
+AGENT_ID = os.environ.get("AGENT_ID", "e2248")
 NPM_TOKEN = os.environ.get("NPM_TOKEN", "")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 NEAR_DEPLOY_ACCOUNT = os.environ.get("NEAR_DEPLOY_ACCOUNT", "e2248.testnet")
@@ -63,7 +63,7 @@ SERVICE_NAME = os.environ.get("SERVICE_NAME", "NEAR AutoBot - AI Agent")
 SERVICE_DESCRIPTION = os.environ.get(
     "SERVICE_DESCRIPTION",
     "Autonomous AI agent for code review, research, documentation, content creation, "
-    "and blockchain development. Powered by Claude Sonnet 4.6. Delivers high-quality "
+    "and blockchain development. Powered by DeepSeek V3. Delivers high-quality "
     "work with smart formatting, revision handling, and fast turnaround."
 )
 SERVICE_CATEGORY = os.environ.get("SERVICE_CATEGORY", "development")
@@ -267,11 +267,14 @@ def _tag_fit_score(tags: List[str]) -> float:
     score = 0.0
     if tag_lower & {"rust", "python", "javascript", "code", "agent", "api", "sdk"}:
         score += 1.0
-    if tag_lower & {"docs", "documentation", "research", "analysis"}:
+    # High earners from marketplace data: blog posts, SEO, newsletters
+    if tag_lower & {"blog", "seo", "newsletter", "writing", "content-creation", "copywriting", "article"}:
+        score += 0.95
+    if tag_lower & {"docs", "documentation", "research", "analysis", "audit", "report"}:
         score += 0.8
     if tag_lower & {"near", "web3", "blockchain"}:
         score += 0.6
-    if tag_lower & {"marketing", "content", "social", "twitter", "x"}:
+    if tag_lower & {"meme", "marketing", "content", "social", "social-media", "tweet"}:
         score += 0.5
     return min(score / 1.6, 1.0)
 
@@ -293,6 +296,17 @@ def _job_memory_boost(job: Dict[str, Any], job_memory: Dict[str, Any]) -> float:
                 boosts.append(win_rate * 0.10)
 
     return max(boosts) if boosts else 0.0
+
+
+def _safe_filename(base_dir: str, filename: str) -> Optional[str]:
+    """Return safe absolute path inside base_dir, or None if path traversal detected."""
+    # Strip leading slashes and normalize
+    clean = os.path.normpath(filename.lstrip("/\\"))
+    full = os.path.realpath(os.path.join(base_dir, clean))
+    if not full.startswith(os.path.realpath(base_dir)):
+        log.warning(f"Path traversal blocked: {filename!r}")
+        return None
+    return full
 
 
 def _has_requester_balance(job: Dict[str, Any]) -> bool:
@@ -339,9 +353,20 @@ def score_job(job: Dict[str, Any], job_memory: Optional[Dict[str, Any]] = None) 
 def choose_bid_terms(job: Dict[str, Any], score: float) -> Tuple[str, int]:
     budget = float(job.get("budget_amount") or 0)
     tags = {t.lower() for t in (job.get("tags") or [])}
+    title_desc = ((job.get("title") or "") + " " + (job.get("description") or "")).lower()
 
-    # Bid as % of budget — competitive pricing
-    if score >= 0.9:
+    # Tiny budgets — bid full, no room to discount
+    if budget <= 2.0:
+        bid_pct = 1.0
+    # Content/blog/writing — most competitive, bid high
+    elif tags & {"blog", "seo", "newsletter", "writing", "content-creation", "copywriting"} or \
+            any(kw in title_desc for kw in ["blog post", "seo article", "newsletter", "write a post", "write an article"]):
+        bid_pct = 0.95
+    # Research/analysis — bid near full
+    elif tags & {"research", "analysis", "audit", "report"}:
+        bid_pct = 0.90
+    # Score-based fallback
+    elif score >= 0.9:
         bid_pct = 0.90
     elif score >= 0.75:
         bid_pct = 0.85
@@ -653,7 +678,7 @@ def write_health_status(state: Dict[str, Any], cycle_count: int, wallet_balance:
 
     status = {
         "bot_version": "v1",
-        "model": "claude-sonnet-4-6",
+        "model": "deepseek/deepseek-chat-v3-0324",
         "uptime_cycles": cycle_count,
         "last_cycle": datetime.now(timezone.utc).isoformat(),
         "wallet_balance_near": wallet_balance,
@@ -684,22 +709,42 @@ def write_health_status(state: Dict[str, Any], cycle_count: int, wallet_balance:
 # ========================
 # AGENT EARNINGS MONITOR
 # ========================
+def fetch_agent_profile() -> Dict[str, Any]:
+    """Fetch live agent profile stats from API."""
+    for url in [
+        f"https://market.near.ai/v1/agents/{AGENT_ID}" if AGENT_ID else None,
+        "https://market.near.ai/v1/agents/me",
+    ]:
+        if not url:
+            continue
+        data = request_json("GET", url, headers=NEAR_HEADERS, timeout=10, expected_statuses={200})
+        log.info(f"fetch_agent_profile [{url}] keys: {list(data.keys())[:15]}")
+        log.info(f"fetch_agent_profile values: earned={data.get('total_earned')} completed={data.get('jobs_completed')} bids={data.get('bids_placed')} rep={data.get('reputation_score')}")
+        if not data.get("error"):
+            return data
+    return {}
+
+
 def check_agent_earnings(state: Dict[str, Any]) -> None:
     """Check agent total_earned and jobs_completed, notify on changes."""
-    if not AGENT_ID:
-        return
-    data = request_json(
-        "GET",
-        f"https://market.near.ai/v1/agents/{AGENT_ID}",
-        headers=NEAR_HEADERS,
-        timeout=10,
-        expected_statuses={200},
-    )
-    if data.get("error"):
+    data = fetch_agent_profile()
+    if not data or data.get("error"):
         return
 
-    total_earned = float(data.get("total_earned") or 0)
-    jobs_completed = int(data.get("jobs_completed") or 0)
+    log.info(f"Agent API fields: {list(data.keys())}")
+
+    _earned_raw = data.get("total_earned") or data.get("earned") or data.get("total_revenue") or 0
+    if isinstance(_earned_raw, dict):
+        _earned_raw = _earned_raw.get("NEAR") or next(iter(_earned_raw.values()), 0)
+    total_earned = float(_earned_raw or 0)
+    jobs_completed = int(
+        data.get("jobs_completed") or data.get("completed_jobs") or
+        data.get("total_completed") or data.get("completed") or 0
+    )
+    bids_placed = int(
+        data.get("bids_placed") or data.get("total_bids") or
+        data.get("bids") or 0
+    )
 
     last_earned = float(state.get("last_total_earned") or 0)
     last_completed = int(state.get("last_jobs_completed") or 0)
@@ -726,6 +771,15 @@ def check_agent_earnings(state: Dict[str, Any]) -> None:
         state["last_jobs_completed"] = jobs_completed
         # Immediately refresh service profile with new count
         refresh_service_descriptions(state, jobs_completed)
+
+    # Always update bids_placed from API (lifetime stats)
+    if bids_placed > 0:
+        state["api_bids_placed"] = bids_placed
+    # Always sync earned even if no change notification
+    if total_earned > 0 and total_earned >= last_earned:
+        state["last_total_earned"] = total_earned
+    if jobs_completed > 0 and jobs_completed >= last_completed:
+        state["last_jobs_completed"] = jobs_completed
 
 
 def send_daily_summary(state: Dict[str, Any], balance: Optional[float]) -> None:
@@ -863,42 +917,32 @@ _tg_last_update_id: int = 0
 _tg_state_ref: List[Dict[str, Any]] = []
 
 
-def _rotate_api_key() -> str:
-    result = request_json(
-        "POST",
-        "https://market.near.ai/v1/agents/rotate-key",
-        headers=NEAR_HEADERS,
-        expected_statuses={200, 201},
-        timeout=15,
-    )
-    if result.get("error"):
-        return f"❌ Key rotation failed: {tg_escape(result['error'])}"
-    new_key = result.get("api_key") or result.get("key") or result.get("token") or ""
-    if new_key:
-        return f"🔑 <b>Key rotated!</b>\nNew key: <code>{tg_escape(new_key)}</code>\nUpdate NEAR_KEY in ~/.bashrc"
-    return "🔑 Key rotation requested — check dashboard for new key"
-
 
 def handle_tg_command(text: str) -> str:
     state = _tg_state_ref[0] if _tg_state_ref else {}
     cmd_parts = text.strip().split()
     cmd = cmd_parts[0].lower()
 
-    if cmd == "/rotatekey":
-        return _rotate_api_key()
-
     if cmd == "/status":
-        stats = state.get("stats", {})
-        decided = stats.get("accepted", 0) + stats.get("rejected", 0)
-        win_rate = round(stats.get("accepted", 0) / decided * 100, 1) if decided > 0 else 0.0
+        profile = fetch_agent_profile()
+        bal = check_wallet_balance()
+        bal_str = f"{bal:.4f} NEAR" if bal is not None else "—"
+        bids = int(profile.get("bids_placed") or profile.get("total_bids") or 0)
+        completed = int(profile.get("jobs_completed") or profile.get("completed_jobs") or 0)
+        _earned_raw = profile.get("total_earned") or profile.get("earned") or 0
+        if isinstance(_earned_raw, dict):
+            _earned_raw = _earned_raw.get("NEAR") or next(iter(_earned_raw.values()), 0)
+        earned = float(_earned_raw or 0)
+        rep_score = profile.get("reputation_score", "—")
+        rep_stars = profile.get("reputation_stars", "—")
         return (
-            f"📊 <b>Bot status</b>\n"
-            f"Bids: {stats.get('total_bids', 0)}\n"
-            f"Accepted: {stats.get('accepted', 0)} ({win_rate}%)\n"
-            f"Submitted: {stats.get('submitted', 0)}\n"
-            f"Completed: {state.get('last_jobs_completed', 0)}\n"
-            f"Earned: {state.get('last_total_earned', 0.0):.2f} NEAR\n"
-            f"Job memory: {len(state.get('job_memory', {}))} tags"
+            f"📊 <b>Bot status (live)</b>\n"
+            f"💰 Balance: {bal_str}\n"
+            f"💸 Earned: {earned:.2f} NEAR\n"
+            f"🎯 Bids: {bids}\n"
+            f"🏆 Completed: {completed}\n"
+            f"⭐ Reputation: {rep_score}/100 ({rep_stars}★)\n"
+            f"🧠 Job memory: {len(state.get('job_memory', {}))} tags"
         )
 
     if cmd == "/balance":
@@ -934,7 +978,6 @@ def handle_tg_command(text: str) -> str:
             "🤖 <b>Bot commands</b>\n"
             "/status — current stats\n"
             "/balance — wallet balance\n"
-            "/rotatekey — rotate API key\n"
             "/dispute &lt;job_id&gt; — open dispute for job\n"
             "/withdraw &lt;account.near&gt; — withdraw balance\n"
             "/help — this message"
@@ -1129,7 +1172,7 @@ def _ensure_extra_services_registered(state: Dict[str, Any]) -> None:
 # ========================
 _BASE_SERVICE_DESCRIPTION = (
     "Autonomous AI agent for code review, research, documentation, content creation, "
-    "and blockchain development. Powered by Claude Sonnet 4.6. Delivers high-quality "
+    "and blockchain development. Powered by DeepSeek V3. Delivers high-quality "
     "work with smart formatting, revision handling, and fast turnaround."
 )
 _BASE_EXTRA_DESCRIPTIONS = {
@@ -1424,7 +1467,7 @@ def _call_llm(prompt: str, max_tokens: int = 8192, timeout: int = 120) -> Option
                 "content-type": "application/json",
             },
             payload={
-                "model": "anthropic/claude-sonnet-4-6",
+                "model": "deepseek/deepseek-chat-v3-0324",
                 "max_tokens": max_tokens,
                 "messages": [{"role": "user", "content": prompt}],
             },
@@ -1466,11 +1509,15 @@ def _detect_output_format(tags: List[str], title: str, description: str) -> str:
 
     if tag_lower & {"rust", "python", "javascript", "solidity", "code", "smart-contract", "sdk", "api", "agent"}:
         return "code"
+    if tag_lower & {"blog", "seo", "article", "copywriting", "blog-post"}:
+        return "blog_post"
+    if tag_lower & {"newsletter", "email", "email-marketing"}:
+        return "newsletter"
     if tag_lower & {"docs", "documentation", "technical-writing", "tutorial"}:
         return "markdown_doc"
-    if tag_lower & {"research", "analysis", "data", "report", "survey"}:
+    if tag_lower & {"research", "analysis", "data", "report", "survey", "audit"}:
         return "research_report"
-    if tag_lower & {"marketing", "social", "twitter", "x", "tweet"}:
+    if tag_lower & {"meme", "marketing", "social", "social-media", "twitter", "x", "tweet"}:
         return "social_content"
 
     if any(kw in title_lower or kw in desc_lower for kw in ["write code", "build", "implement", "develop", "create a script"]):
@@ -1516,6 +1563,23 @@ FORMAT_INSTRUCTIONS = {
         "- Engaging hooks and CTAs\n"
         "- Emoji usage where appropriate"
     ),
+    "blog_post": (
+        "OUTPUT FORMAT: Write a complete, publish-ready blog post.\n"
+        "- Compelling headline and subheadline\n"
+        "- Engaging introduction that hooks the reader\n"
+        "- 3-5 main sections with clear headings\n"
+        "- Concrete examples, data points, or stories\n"
+        "- Strong conclusion with a call-to-action\n"
+        "- SEO-friendly structure, 600-1500 words"
+    ),
+    "newsletter": (
+        "OUTPUT FORMAT: Write a complete newsletter/email.\n"
+        "- 3 subject line options at the top\n"
+        "- Personal, conversational tone\n"
+        "- Clear sections: intro, main content, CTA\n"
+        "- 300-600 words, engaging and scannable\n"
+        "- Sign-off and sender name placeholder"
+    ),
     "general": (
         "OUTPUT FORMAT: Provide a clear, well-structured deliverable.\n"
         "- Use Markdown formatting\n"
@@ -1523,6 +1587,20 @@ FORMAT_INSTRUCTIONS = {
         "- Include concrete examples where helpful"
     ),
 }
+
+
+def create_gist(title: str, content: str, filename: str = "deliverable.md") -> Optional[str]:
+    """Create a private GitHub Gist and return its URL."""
+    if not GITHUB_TOKEN:
+        return None
+    data = request_json(
+        "POST", "https://api.github.com/gists",
+        headers={"Authorization": f"token {GITHUB_TOKEN}", "Content-Type": "application/json"},
+        payload={"description": title[:100], "public": False, "files": {filename: {"content": content}}},
+        timeout=15,
+        expected_statuses={201},
+    )
+    return data.get("html_url")
 
 
 def generate_deliverable(job_title: str, job_description: str, tags: List[str]) -> Optional[str]:
@@ -1551,7 +1629,15 @@ DESCRIPTION:
 
 Be thorough, professional, and deliver real value. Write the complete deliverable now:"""
 
-    return _call_llm(prompt, max_tokens=8192, timeout=120)
+    result = _call_llm(prompt, max_tokens=8192, timeout=120)
+    if result and output_format == "code" and GITHUB_TOKEN:
+        ext = "rs" if any(t in {"rust"} for t in {t.lower() for t in tags}) else \
+              "py" if any(t in {"python"} for t in {t.lower() for t in tags}) else \
+              "js" if any(t in {"javascript", "typescript"} for t in {t.lower() for t in tags}) else "md"
+        gist_url = create_gist(job_title, result, f"deliverable.{ext}")
+        if gist_url:
+            result = f"{result}\n\n---\n📎 **Gist:** {gist_url}"
+    return result
 
 
 def _detect_unknown_action(tags: List[str], title: str, description: str) -> Optional[str]:
@@ -1657,7 +1743,9 @@ Rules:
     with tempfile.TemporaryDirectory() as tmpdir:
         # Write contract files
         for filepath, content in files.items():
-            full_path = os.path.join(tmpdir, filepath)
+            full_path = _safe_filename(tmpdir, filepath)
+            if not full_path:
+                continue
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
             with open(full_path, "w") as f:
                 f.write(content if isinstance(content, str) else json.dumps(content, indent=2))
@@ -1876,7 +1964,9 @@ Rules:
 
             # Write files
             for filename, content in files.items():
-                filepath = os.path.join(tmpdir, filename)
+                filepath = _safe_filename(tmpdir, filename)
+                if not filepath:
+                    continue
                 parent = os.path.dirname(filepath)
                 if parent and not os.path.exists(parent):
                     os.makedirs(parent)
@@ -1886,9 +1976,13 @@ Rules:
             subprocess.run(["git", "add", "."], cwd=tmpdir, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=tmpdir, check=True, capture_output=True)
 
-            # Push with token in URL
-            auth_url = clone_url.replace("https://", f"https://{github_username}:{GITHUB_TOKEN}@")
-            subprocess.run(["git", "push", auth_url, "HEAD:main"], cwd=tmpdir, check=True, capture_output=True, timeout=60)
+            # Push using GIT_ASKPASS to avoid token in process list / logs
+            askpass_script = os.path.join(tmpdir, "_askpass.sh")
+            with open(askpass_script, "w") as _f:
+                _f.write(f"#!/bin/sh\necho '{GITHUB_TOKEN}'\n")
+            os.chmod(askpass_script, 0o700)
+            push_env = {**os.environ, "GIT_ASKPASS": askpass_script, "GIT_USERNAME": github_username}
+            subprocess.run(["git", "push", clone_url, "HEAD:main"], cwd=tmpdir, check=True, capture_output=True, timeout=60, env=push_env)
 
             log.info(f"GITHUB PUBLISHED: {repo_url}")
             tg_send(f"🐙 <b>GitHub repo created!</b>\n<a href='{repo_url}'>{repo_name}</a>")
@@ -1971,7 +2065,9 @@ Rules:
 
         # Write package files
         for filename, content in files.items():
-            filepath = os.path.join(tmpdir, filename)
+            filepath = _safe_filename(tmpdir, filename)
+            if not filepath:
+                continue
             os.makedirs(os.path.dirname(filepath), exist_ok=True) if os.path.dirname(filepath) else None
             with open(filepath, "w") as f:
                 f.write(content if isinstance(content, str) else json.dumps(content, indent=2))
@@ -2110,7 +2206,9 @@ def is_job_open(job: Dict[str, Any]) -> bool:
     return state_value in {"open", "filling", "in_progress", "assigned"}
 
 
-def fetch_all_jobs() -> List[Dict[str, Any]]:
+def fetch_all_jobs(state: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    if state is None:
+        state = {}
     jobs: List[Dict[str, Any]] = []
     offset = 0
     page_size = 100
@@ -2506,7 +2604,7 @@ def check_bid_statuses(state: Dict[str, Any]) -> None:
                 handle_revision(bid, state)
 
     # Handle comments (multi-round conversation)
-    if CLAUDE_API_KEY and not DRY_RUN:
+    if _LLM_KEY and not DRY_RUN:
         handle_bid_comments(bids, state)
 
     save_state(state)
@@ -2623,7 +2721,7 @@ def auto_submit_job(job_id: str, state: Dict[str, Any]) -> None:
 
 def auto_bid(state: Dict[str, Any]) -> int:
     job_memory = state.get("job_memory", {})
-    jobs = fetch_all_jobs()
+    jobs = fetch_all_jobs(state)
     ranked_jobs = sorted(jobs, key=lambda j: score_job(j, job_memory), reverse=True)
     log.info(
         f"Found jobs: {len(jobs)}, already bid: {len(state['bid_jobs'])}, "
@@ -2820,7 +2918,7 @@ def main() -> None:
     tg_send(
         f"🚀 <b>NEAR AutoBot v1 started</b>\n"
         f"Mode: {'DRY-RUN' if DRY_RUN else 'LIVE'}\n"
-        f"Model: claude-sonnet-4-6 (8K tokens)\n"
+        f"Model: deepseek/deepseek-chat-v3-0324\n"
         f"💰 Wallet: {balance_str}\n"
         f"State store: {'SQLite' if USE_SQLITE else 'JSON'}\n"
         f"Filters: budget &gt;= {MIN_BUDGET} NEAR, bid_count &lt;= {MAX_BID_COUNT}\n"
