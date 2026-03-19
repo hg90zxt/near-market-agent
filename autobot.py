@@ -129,6 +129,11 @@ SKIP_ACTION_KEYWORDS = [
     "fill out form", "fill the form", "submit application",
     "record video", "record a video", "take screenshot",
     "download and install", "install the app",
+    # Сложные задачи с кастомной инфраструктурой
+    "build mcp server", "create mcp server", "mcp server for",
+    "deploy smart contract", "deploy a contract", "deploy contract",
+    "near wallet integration", "wallet operations for",
+    "production-ready mcp", "production ready mcp",
 ]
 ONLY_TAGS: List[str] = []
 
@@ -333,7 +338,11 @@ def job_requires_real_action(job: Dict[str, Any]) -> bool:
 
 
 def score_job(job: Dict[str, Any], job_memory: Optional[Dict[str, Any]] = None) -> float:
-    budget = float(job.get("budget_amount") or 0)
+    budget = float(
+        job.get("budget_amount") or job.get("reward") or
+        job.get("price") or job.get("payment_amount") or
+        job.get("budget") or 0
+    )
     bid_count = int(job.get("bid_count") or 0)
     tags = job.get("tags", [])
     is_competition = job.get("job_type") == "competition"
@@ -351,7 +360,12 @@ def score_job(job: Dict[str, Any], job_memory: Optional[Dict[str, Any]] = None) 
 
 
 def choose_bid_terms(job: Dict[str, Any], score: float) -> Tuple[str, int]:
-    budget = float(job.get("budget_amount") or 0)
+    # Try multiple API field names for budget
+    budget = float(
+        job.get("budget_amount") or job.get("reward") or
+        job.get("price") or job.get("payment_amount") or
+        job.get("budget") or 0
+    )
     tags = {t.lower() for t in (job.get("tags") or [])}
     title_desc = ((job.get("title") or "") + " " + (job.get("description") or "")).lower()
 
@@ -374,7 +388,9 @@ def choose_bid_terms(job: Dict[str, Any], score: float) -> Tuple[str, int]:
         bid_pct = 0.80
 
     amount = max(1.0, round(budget * bid_pct, 1))
-    amount = min(amount, budget)
+    # Only cap to budget if we know the budget — prevents min(x, 0) zeroing the bid
+    if budget > 0:
+        amount = min(amount, budget)
 
     eta_seconds = 3600
     if tags & {"rust", "python", "javascript", "code", "sdk", "api"}:
