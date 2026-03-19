@@ -615,7 +615,7 @@ def save_state(state: Dict[str, Any]) -> None:
 # WALLET
 # ========================
 def check_wallet_balance() -> Optional[float]:
-    """Fetch wallet balance from NEAR market API."""
+    """Fetch earned NEAR balance from Verifier contract (job earnings)."""
     data = request_json(
         "GET",
         "https://market.near.ai/v1/wallet/balance",
@@ -626,10 +626,20 @@ def check_wallet_balance() -> Optional[float]:
     if data.get("error"):
         log.warning(f"Wallet balance check failed: {data['error']}")
         return None
-    balance = data.get("balance") or data.get("amount") or data.get("data")
-    if balance is not None:
+    # Prefer earned balance from Verifier (balances array) — top-level "balance" is native gas only
+    for b in (data.get("balances") or []):
+        sym = (b.get("symbol") or "").upper()
+        tid = (b.get("token_id") or "")
+        if sym == "NEAR" or "wrap.near" in tid:
+            try:
+                return float(b["balance"])
+            except (ValueError, TypeError, KeyError):
+                pass
+    # Fallback: top-level balance (native NEAR)
+    native = data.get("balance") or data.get("amount") or data.get("data")
+    if native is not None:
         try:
-            return float(balance)
+            return float(native)
         except (ValueError, TypeError):
             pass
     log.info(f"Wallet response: {json.dumps(data)[:200]}")
@@ -773,7 +783,8 @@ def auto_withdraw_if_needed(balance: Optional[float]) -> None:
         "POST",
         "https://market.near.ai/v1/wallet/withdraw",
         headers=NEAR_HEADERS,
-        payload={"to_account_id": AUTO_WITHDRAW_TO, "amount": str(amount), "token_id": "NEAR"},
+        payload={"to_account_id": AUTO_WITHDRAW_TO, "amount": str(amount), "token_id": "NEAR",
+                  "idempotency_key": f"auto-withdraw-{int(time.time() * 1000)}"},
         expected_statuses={200, 201},
         timeout=20,
     )
@@ -923,7 +934,8 @@ def handle_tg_command(text: str) -> str:
         result = request_json(
             "POST", "https://market.near.ai/v1/wallet/withdraw",
             headers=NEAR_HEADERS,
-            payload={"to_account_id": target, "amount": str(amount), "token_id": "NEAR"},
+            payload={"to_account_id": target, "amount": str(amount), "token_id": "NEAR",
+                     "idempotency_key": f"manual-withdraw-{int(time.time() * 1000)}"},
             expected_statuses={200, 201}, timeout=20,
         )
         if result.get("error"):
@@ -1695,13 +1707,17 @@ Rules:
 
         # Deploy to testnet
         log.info(f"NEAR DEPLOY: deploying {wasm_path} to {NEAR_DEPLOY_ACCOUNT}")
-        deploy_result = subprocess.run(
-            ["near", "deploy", NEAR_DEPLOY_ACCOUNT, wasm_path, "--networkId", "testnet"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            env=env,
-        )
+        try:
+            deploy_result = subprocess.run(
+                ["near", "deploy", NEAR_DEPLOY_ACCOUNT, wasm_path, "--networkId", "testnet"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env=env,
+            )
+        except OSError as e:
+            log.error(f"NEAR DEPLOY: near CLI not found or failed to run: {e}")
+            return None
 
         if deploy_result.returncode != 0:
             log.error(f"NEAR DEPLOY: deploy failed: {deploy_result.stderr[:500]}")
@@ -1875,9 +1891,12 @@ Rules:
             subprocess.run(["git", "config", "user.email", "bot@near.ai"], cwd=tmpdir, check=True, capture_output=True)
             subprocess.run(["git", "config", "user.name", "NEAR Bot"], cwd=tmpdir, check=True, capture_output=True)
 
-            # Write files
+            # Write files (path traversal protection)
             for filename, content in files.items():
-                filepath = os.path.join(tmpdir, filename)
+                filepath = _safe_filename(tmpdir, filename)
+                if not filepath:
+                    log.warning(f"GITHUB: skipping unsafe filename: {filename!r}")
+                    continue
                 parent = os.path.dirname(filepath)
                 if parent and not os.path.exists(parent):
                     os.makedirs(parent)
@@ -1902,9 +1921,11 @@ Rules:
             tg_send(f"🐙 <b>GitHub repo created!</b>\n<a href='{repo_url}'>{repo_name}</a>")
             return repo_url
 
-        except subprocess.CalledProcessError as e:
-            stderr = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else str(e.stderr or "")
-            log.error(f"GITHUB: git error: {stderr}")
+        except (subprocess.CalledProcessError, OSError) as e:
+            stderr = getattr(e, "stderr", None)
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode(errors="replace")
+            log.error(f"GITHUB: git error: {stderr or e}")
             return None
 
 
