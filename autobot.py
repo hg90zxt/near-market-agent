@@ -773,7 +773,7 @@ def auto_withdraw_if_needed(balance: Optional[float]) -> None:
         "POST",
         "https://market.near.ai/v1/wallet/withdraw",
         headers=NEAR_HEADERS,
-        payload={"to_account_id": AUTO_WITHDRAW_TO, "amount": str(amount)},
+        payload={"to_account_id": AUTO_WITHDRAW_TO, "amount": str(amount), "token_id": "NEAR"},
         expected_statuses={200, 201},
         timeout=20,
     )
@@ -923,7 +923,7 @@ def handle_tg_command(text: str) -> str:
         result = request_json(
             "POST", "https://market.near.ai/v1/wallet/withdraw",
             headers=NEAR_HEADERS,
-            payload={"to_account_id": target, "amount": str(amount)},
+            payload={"to_account_id": target, "amount": str(amount), "token_id": "NEAR"},
             expected_statuses={200, 201}, timeout=20,
         )
         if result.get("error"):
@@ -1887,16 +1887,24 @@ Rules:
             subprocess.run(["git", "add", "."], cwd=tmpdir, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=tmpdir, check=True, capture_output=True)
 
-            # Push with token in URL
-            auth_url = clone_url.replace("https://", f"https://{github_username}:{GITHUB_TOKEN}@")
-            subprocess.run(["git", "push", auth_url, "HEAD:main"], cwd=tmpdir, check=True, capture_output=True, timeout=60)
+            # Push using GIT_ASKPASS to avoid token in URL/process list
+            askpass = os.path.join(tmpdir, "_askpass.sh")
+            with open(askpass, "w") as _f:
+                _f.write(f"#!/bin/sh\necho '{GITHUB_TOKEN}'\n")
+            os.chmod(askpass, 0o700)
+            push_env = {**os.environ, "GIT_ASKPASS": askpass, "GIT_USERNAME": github_username}
+            subprocess.run(
+                ["git", "push", clone_url, "HEAD:main"],
+                cwd=tmpdir, check=True, capture_output=True, timeout=60, env=push_env,
+            )
 
             log.info(f"GITHUB PUBLISHED: {repo_url}")
             tg_send(f"🐙 <b>GitHub repo created!</b>\n<a href='{repo_url}'>{repo_name}</a>")
             return repo_url
 
         except subprocess.CalledProcessError as e:
-            log.error(f"GITHUB: git error: {e.stderr}")
+            stderr = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else str(e.stderr or "")
+            log.error(f"GITHUB: git error: {stderr}")
             return None
 
 
@@ -2024,7 +2032,10 @@ Rules:
                         with open(pkg_json_path) as f:
                             pj = json.load(f)
                         parts = pj.get("version", "1.0.0").split(".")
-                        parts[-1] = str(int(parts[-1]) + 1)
+                        try:
+                            parts[-1] = str(int(parts[-1]) + 1)
+                        except ValueError:
+                            parts[-1] = "1"
                         pj["version"] = ".".join(parts)
                         with open(pkg_json_path, "w") as f:
                             json.dump(pj, f, indent=2)
@@ -2239,7 +2250,7 @@ def place_bid(
     eta_seconds: int = 3600,
 ) -> Dict[str, Any]:
     proposal = get_proposal(tags or [])
-    payload = {"proposal": proposal, "amount": amount, "eta_seconds": eta_seconds}
+    payload = {"proposal": proposal, "amount": str(amount), "eta_seconds": eta_seconds}
 
     if DRY_RUN:
         log.info(f"DRY-RUN BID: {job_id[:8]} amount={amount} eta={eta_seconds}")
